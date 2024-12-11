@@ -1,0 +1,1569 @@
+---
+title: "Overwatch 2 Win Prediction"
+author: "Kristopher Pouncy"
+date: "2024-11-13"
+output:
+  pdf_document:
+    dev: 'pdf'
+header-includes:
+  - \usepackage{float}
+---
+
+```{r setup_project, echo=FALSE, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(
+  cache = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 7.5,
+  fig.height = 5.5,
+  dpi = 150,
+  fig.pos = "H", # Ensures that the plots are in the right order
+  fig.align = "center",
+  out.width = "80%",
+  dev = "png"
+)
+
+theme_ow2 <- function() {
+  theme_fivethirtyeight() +
+    theme(
+      plot.background = element_rect(fill = "#2A2A2D", color = NA),   # Dark plot background
+      panel.background = element_rect(fill = "#2A2A2D", color = NA),  # Dark panel background
+      panel.grid.major = element_line(color = "#4B4B4F", linewidth = 0.5),  # Subtle grid lines
+      panel.grid.minor = element_blank(),  # Remove minor grid lines
+      axis.title = element_text(color = "white", size = 12),  # White axis titles
+      axis.text = element_text(color = "white"),  # White axis text
+      plot.title = element_text(color = "#FFA500", size = 16, face = "bold"),  # Orange title
+      plot.subtitle = element_text(color = "white", size = 10)  # White subtitle
+    )
+}
+
+# !!! These are the two libraries that are used in the code
+#install.packages("ggthemes")
+#install.packages("caTools")
+#install.packages("gridExtra")
+#install.packages("pROC")
+
+library(caret)
+library(ggthemes)
+library(pROC)
+library(gridExtra)
+library(tidyverse) # `dplyr` is expected to overwrite `stats`.
+```
+
+```{r setup_functions_and_staticdata, echo=F}
+clean_map_names <- function(map_name) {
+  # Clean the incorrect names for maps in the dataset
+  corrected_name <- case_when(
+    map_name %in% c("MIDTOWN", "MID TOWN") ~ "Midtown",
+    map_name %in% c("ESPERANGA", "ESPERANCA") ~ "Esperança",
+    map_name == "PARA/SO" ~ "Paraiso",
+    map_name %in% c("NUMBANI", "NUMBANI CITY") ~ "Numbani",
+    map_name %in% c("NEW JUNK CITY", "JUNKERTOWN") ~ "Junkertown",
+    map_name %in% c("THRONE OF ANUBIS") ~ "Temple of Anubis",
+    map_name %in% c("NEW QUEEN STREET") ~ "New Queen Street",
+    map_name %in% c("WATCHPOINT") ~ "Watchpoint: Gibraltar",
+    map_name == "HANAOKA" ~ "Hanamura",
+    map_name == "RUNASAPI" ~ "Runa Sapi",
+    map_name == "KING" ~ "King's Row",
+    TRUE ~ map_name  # Leave as is if no correction is needed
+  )
+  return(toupper(corrected_name))
+}
+
+is_valid_character <- function(character, role) {
+  # Define a helper function to determine if a character matches the role
+  if (role == "tank") return(character %in% tank_heroes)
+  if (role == "damage") return(character %in% damage_heroes)
+  if (role == "support") return(character %in% support_heroes)
+  return(FALSE)
+}
+
+# latest data from Overbuff for all game types, PC, past 12 months
+overbuff_data <- data.frame(
+  Character = c("Ana", "Mercy", "Moira", "Genji", "Kiriko", "Cassidy", 
+                "Soldier_76", "Hanzo", "Widowmaker", "Reinhardt", "DVa", 
+                "Lucio", "Zenyatta", "Tracer", "Ashe", "Junkrat", "Sombra", 
+                "Zarya", "Roadhog", "Baptiste", "Reaper", "Doomfist", "Pharah", 
+                "Lifeweaver", "Orisa", "Sigma", "Sojourn", "Brigitte", "Mei", 
+                "Winston", "Illari", "Bastion", "Junker_Queen", "Torbjorn", 
+                "Echo", "Symmetra", "Wrecking_Ball", "Ramattra", "Juno", 
+                "Mauga", "Venture"),
+  Role = c("Support", "Support", "Support", "Damage", "Support", "Damage", 
+           "Damage", "Damage", "Damage", "Tank", "Tank", "Support", "Support", 
+           "Damage", "Damage", "Damage", "Damage", "Tank", "Tank", "Support", 
+           "Damage", "Tank", "Damage", "Support", "Tank", "Tank", "Damage", 
+           "Support", "Damage", "Tank", "Support", "Damage", "Tank", "Damage", 
+           "Damage", "Damage", "Tank", "Tank", "Support", "Tank", "Damage"),
+  Pick_Rate = c(7.50, 6.34, 4.26, 4.18, 4.17, 3.94, 3.82, 3.34, 3.27, 3.12, 
+                3.06, 2.96, 2.94, 2.67, 2.52, 2.44, 2.35, 2.31, 2.25, 2.24, 
+                2.06, 2.05, 1.84, 1.82, 1.75, 1.71, 1.70, 1.66, 1.60, 1.60, 
+                1.59, 1.57, 1.30, 1.18, 1.18, 1.16, 1.08, 1.05, 0.88, 0.67, 
+                0.58),
+  Win_Rate = c(48.55, 50.50, 50.57, 50.43, 48.59, 46.99, 49.83, 47.94, 47.14, 
+               52.44, 51.16, 53.09, 52.73, 49.05, 50.48, 50.22, 47.09, 49.02, 
+               48.40, 48.26, 51.21, 49.89, 51.35, 47.01, 46.97, 51.10, 46.84, 
+               54.24, 50.22, 49.95, 52.45, 48.76, 52.80, 53.90, 49.86, 54.59, 
+               50.05, 50.86, 52.88, 52.28, 53.60),
+  KDA = c(4.40, 4.30, 6.33, 2.71, 5.02, 2.69, 3.20, 3.18, 2.57, 2.99, 6.77, 
+          4.23, 5.59, 2.75, 3.27, 2.88, 3.55, 4.96, 4.42, 4.52, 3.04, 3.50, 
+          3.13, 5.25, 4.01, 4.75, 3.29, 4.73, 3.85, 4.26, 3.85, 3.12, 5.31, 
+          3.27, 2.95, 3.43, 4.83, 4.28, 5.03, 5.16, 2.75)
+)
+
+# change the Pick Rate and Win Rate into fractions
+overbuff_data$Pick_Rate <- overbuff_data$Pick_Rate / 100
+overbuff_data$Win_Rate <- overbuff_data$Win_Rate / 100
+
+# Create the hero data
+tank_heroes <- c("Sigma", "Orisa", "Reinhardt", "Ramattra", "Winston", 
+                 "Roadhog", "Zarya", "Mauga", "Wrecking_Ball", "Doomfist", 
+                 "Junker_Queen", "DVa")
+
+damage_heroes <- c("Genji", "Soldier_76", "Bastion", "Venture", "Cassidy", 
+                   "Sojourn", "Sombra", "Junkrat", "Reaper", "Pharah", "Ashe", 
+                   "Hanzo", "Echo", "Torbjorn", "Widowmaker", "Tracer", 
+                   "Symmetra", "Mei")
+
+support_heroes <- c("Juno", "Ana", "Kiriko", "Mercy", "Moira", "Illari", 
+                    "Lucio", "Baptiste", "Brigitte", "Zenyatta", "Lifeweaver")
+
+# Map the hero types to leaderboard position
+player_roles <- list(
+  tank = c(0, 5),
+  damage = c(1, 2, 6, 7),
+  support = c(3, 4, 8, 9)
+)
+
+```
+
+```{r setup_dataset, warning=FALSE, echo=F}
+# create the dataset
+dataset <- read.csv("game_data.csv") %>%
+  mutate(Result = ifelse(Result == "lose", -1, ifelse(Result == "draw", 0, 1)), 
+         Character = str_remove(Character, "label_"),
+         Map = clean_map_names(Map)) %>% 
+  separate(Time, into = c("Minutes", "Seconds"), fill = "right", extra = "drop") %>%
+  mutate(
+    Minutes = as.numeric(Minutes),
+    Seconds = as.numeric(Seconds),
+    Time = ifelse(is.na(Minutes) | is.na(Seconds), NA, Minutes + (Seconds / 60))
+  ) %>%
+  filter(!is.na(Time) & Time > 0) %>% # Remove rows with invalid or zero times
+  dplyr::select(-Minutes, -Seconds, -Latency)
+
+# Replace remaining NAs with 0
+dataset <- dataset %>% mutate(across(everything(), ~ ifelse(is.na(.), 0, .)))
+
+# Process the dataset
+dataset <- dataset %>%
+  group_by(GameID, PlayerID) %>% # Group by game_id and playerid
+  arrange(GameID, PlayerID, SnapID) %>% # Ensure data is sorted correctly
+  mutate(
+    Role = case_when(
+      PlayerID %in% player_roles$tank ~ "tank",
+      PlayerID %in% player_roles$damage ~ "damage",
+      PlayerID %in% player_roles$support ~ "support",
+      TRUE ~ NA_character_
+    ),
+    Valid_Character = mapply(is_valid_character, Character, Role) # Check if character is valid for the role
+  ) %>%
+  mutate(
+    Character = ifelse(
+      !Valid_Character & SnapID != min(SnapID), # If character is invalid and not the first SnapID
+      lag(Character), # Roll back to the previous character
+      Character
+    )
+  ) %>%
+  ungroup() %>%
+  select(-Role, -Valid_Character) # Clean up intermediate columns
+```
+
+# Introduction
+
+For this project, I collected data over a course of a couple of weeks from Overwatch 2. The games are predominantly Competitive Mode with a few from Quick Play. The goal of this project is to predict the game `Result`, or game outcome, using only the data present in the leaderboard from a single snapshot.
+
+## Dataset Collection
+
+Using screen capturing software and a MobileNetV2 model fine-tuned on character images, the leaderboard and additional information like `Game Mode` and `Time` are recorded when the user checks their stats during the game. The details were saved to a SQL database and then exported to a CSV file. The data was collected from PC games with cross-play compatibility enabled. The dataset contains games from Season 10 and from Season 14, both occurring in 2024 between the times of 12pm-3am. There are a total of 174 games in the dataset. There are 82 losses, 2 draws, and 90 Wins.
+
+**Known Limitation**: One known limitation is that the text extraction software has issues with the numbers 11 and 0. These are typically NA. It should also be noted that when a character image is blocked or hard to detect, the `Character` value is assigned the name "HIDDEN".
+
+## Dataset Structure
+
+The dataset includes the following columns:
+
+-   **GameID**: Unique identifier for each game.
+-   **SnapID**: Identifier for the specific game snapshot.
+-   **PlayerID**: Represents the player's position on the leaderboard (0-9), with:
+    -   **0–4**: Ally team
+    -   **5–9**: Enemy team
+-   **Mode**: The game mode being played.
+-   **Map**: Map on which the game is taking place.
+-   **Time**: Time elapsed in the game.
+-   **Character**: Character associated with the player.
+-   **K, A, D, Damage, H, MIT**: Player-specific performance metrics:
+    -   **K**: Number of kills.
+    -   **A**: Number of assists.
+    -   **D**: Number of deaths.
+    -   **Damage**: Total damage dealt by the player.
+    -   **H**: Healing provided by the player.
+    -   **MIT**: Mitigation, or damage prevented by the player.
+-   **Result**: Final outcome of the game.
+
+## Data Preparation
+
+Before beginning the Exploratory Data Analysis (EDA), several preprocessing steps were applied to clean and transform the dataset:
+
+1.  **Reading and Transforming the Dataset**:
+    -   The dataset was loaded using `read.csv()` and cleaned using a series of transformations.
+2.  **Column Adjustments**:
+    -   The `Result` column was transformed to a numerical scale where:
+        -   `win` = 1
+        -   `draw` = 0
+        -   `lose` = -1
+    -   The `Character` column was cleaned by removing the "label\_" prefix for consistency.
+3.  **Time Conversion**:
+    -   The `Time` string column was split into `Minutes` and `Seconds`, which were then combined into a single numeric `Time` column representing the time in minutes.
+    -   Rows with non-positive values for `Time` were filtered out to maintain data integrity.
+4.  **Removal of Unnecessary Columns**:
+    -   Columns not needed for analysis, such as `Latency`, `Minutes`, and `Seconds`, were removed.
+5.  **Handling Missing Values**:
+    -   Remaining `NA` values in the dataset were replaced with 0 to ensure clean data.
+6.  **Rollover previous Character Status if invalid or Hidden**
+    -   Due to classification error, characters could be incorrect or unknown. To fix this, the character from the previous snapshot is used instead
+
+## Background Information
+
+In Overwatch 2, there are a total of 41 playable heroes. The heroes are categorized into three roles [1]:
+
+-   **Tank**: D.Va, Doomfist, Junker Queen, Mauga, Orisa, Ramattra, Reinhardt, Roadhog, Sigma, Winston, Wrecking Ball, Zarya
+-   **Damage**: Ashe, Bastion, Cassidy, Echo, Genji, Hanzo, Junkrat, Mei, Pharah, Reaper, Sojourn, Soldier: 76, Sombra, Symmetra, Torbjörn, Tracer, Venture, Widowmaker
+-   **Support**: Ana, Baptiste, Brigitte, Illari, Juno, Kiriko, Lifeweaver, Lúcio, Mercy, Moira, Zenyatta
+
+Each team has 5 players composed of 1 Tank, 2 Damage, and 2 Support characters.
+
+**Below is an example of a some data collected from a Snapshot.**
+
+```{r snapshot_sample}
+# show an example snapshot
+dataset %>% filter(GameID == 2 & SnapID==0) %>% 
+  select(Mode, Map, PlayerID, Character, K, A, D, Result, Time)
+```
+
+Additionally, historical data from Overbuff has been downloaded to compared with my dataset. [Overbuff](https://www.overbuff.com/heroes?platform=pc&timeWindow=year) is a website that tracks statistics for Overwatch, enabling players to view their own stats and how they compare against different ranks, game platforms, and timescales [2]. For this dataset, PC statistics for the year (2024) are used for comparisons.
+
+# Exploratory Data Analysis
+
+## EDA Objective
+
+Before going into the EDA, I have three questions or assumptions that I would like to address and learn more about.
+
+My three hypotheses:
+
+(1) The number of swaps done by the Tank role is positively correlated with winning.
+
+(2) Healing is not correlated with the game outcome.
+
+(3) Damage is positively correlated with winning.
+
+**For hypothesis 1**, many believe that swapping tanks during game will improve your chances of winning. **For hypothesis 2**, being a person that predominantly plays the support role, I hypothesize that healing isn't as important to winning as other factors. In fact, I feel like the more healing that is done, the more I'm losing. **For hypothesis 3**, the more damage that is done by damage characters, the greater our chances are of winning. However, from experience, it should be noted that this could be confounded by factors like healing. Note: the p-value of 0.05 will be used.
+
+\vspace{0.25cm}
+
+## Character Analysis
+
+### Pick Rate
+
+**Which character is played the most for each player role? (Continued on next page)**
+
+```{r character_plot_tank, echo=FALSE, warning=FALSE, message=FALSE}
+# Filter only the tanks from specific PlayerID positions and select unique characters per game
+plot_data <- dataset %>%
+  filter(PlayerID %in% c(0, 5) & Character %in% tank_heroes) %>%
+  distinct(GameID, Character, .keep_all = TRUE) %>%  # Keep only unique Character per GameID
+  group_by(Character) %>%
+  summarize(count = n())  # Count unique occurrences of each Character
+
+# Calculate the Margin of Error for the Character Proportion
+plot_data <- plot_data %>%
+  mutate(
+    total = sum(count),
+    proportion = count / total,
+    sd = sqrt(proportion * (1 - proportion)),
+    me = qt(0.975, count - 1) * (sd / sqrt(count))  # Margin of error for 99% confidence level
+  ) %>%
+  select(Character, proportion, me)  # Select only relevant columns
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.cap ="The confidence intervals are quite large due to small sample size. Some intervals don't contain orange dots, showing bias in the dataset."}
+# Filter the Overbuff data for only tank characters
+overbuff_plot <- overbuff_data %>% filter(Character %in% tank_heroes)
+
+plot_data %>%
+  ggplot(aes(x = Character, y = proportion)) +
+  labs(
+    title = "Tank Pick Rate",
+    subtitle = "Blue bars show in-game pick rates; Orange dots represent Overbuff pick rates",
+    y = "Pick Rate (95% CI)"
+  ) +
+  geom_col(fill = "#218ffe") +
+  geom_errorbar(aes(ymin = pmax(0, proportion - me), ymax = proportion + me), 
+                width = 0.2, color = "white") +  # Error bars
+  geom_point(data = overbuff_plot, aes(x = Character, y = Pick_Rate), 
+             color = "orange", size = 3, shape = 21, fill = "orange") +  # Overbuff points for tanks only
+  theme_ow2() +
+  theme(
+    axis.text.x = element_text(angle = 60, hjust = 1)  # Rotate x-axis text
+  )
+```
+
+\vspace{0.25cm}
+
+```{r}
+plot_data
+```
+
+**For tank characters, the pick rate ranges from 0.027 to 0.14**. The least picked tank character is Wrecking Ball, and the most picked is Ramattra. Comparing the 95% confidence intervals with the Overleaf data, it appears that the dataset has a bias towards Orisa, Ramattra, Sigma, and Reinhardt.
+
+\vspace{0.5cm}
+
+```{r character_plot_damage, echo=FALSE, warning=FALSE, message=FALSE}
+# Filter only the damage characters from specific PlayerID positions and select unique characters per game
+plot_data <- dataset %>%
+  filter(PlayerID %in% c(1, 2, 6, 7) & Character %in% damage_heroes) %>%
+  distinct(GameID, Character, .keep_all = TRUE) %>%  # Keep only unique Character per GameID
+  group_by(Character) %>%
+  summarize(count = n())  # Count unique occurrences of each Character
+
+# Calculate the Margin of Error for the Character Proportion
+plot_data <- plot_data %>%
+  mutate(
+    total = sum(count),
+    proportion = count / total,
+    sd = sqrt(proportion * (1 - proportion)),
+    me = qt(0.975, count - 1) * (sd / sqrt(count))  # Margin of error for 99% confidence level
+  ) %>%
+  select(Character, proportion, me)  # Select only relevant columns
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.cap ="The confidence intervals are quite large due to small sample size. There is a bias for Junkrat and Bastion."}
+# Filter the Overbuff data for only tank characters
+overbuff_plot <- overbuff_data %>% filter(Character %in% damage_heroes)
+
+plot_data %>%
+  ggplot(aes(x = Character, y = proportion)) +
+  labs(
+    title = "Damage Pick Rate",
+    subtitle = "Blue bars show in-game pick rates; Orange dots represent Overbuff pick rates",
+    y = "Pick Rate (95% CI)"
+  ) +
+  geom_col(fill = "#218ffe") +
+  geom_errorbar(aes(ymin = pmax(0, proportion - me), ymax = proportion + me), 
+                width = 0.2, color = "white") +  # Error bars
+  geom_point(data = overbuff_plot, aes(x = Character, y = Pick_Rate), 
+             color = "orange", size = 3, shape = 21, fill = "orange") +  # Overbuff points for tanks only
+  theme_ow2() +
+  theme(
+    axis.text.x = element_text(angle = 60, hjust = 1)  # Rotate x-axis text
+  )
+```
+
+\vspace{0.25cm}
+
+```{r}
+plot_data
+```
+
+**For damage character, the pick rate ranges from 0.0296 to 0.0854**. The least picked damage character is Symmetra, and the most picked is Junkrat. Comparing the 95% confidence intervals with the Overleaf data, it appears that Junkrat and Bastion are played more frequently in my games.\vspace{0.5cm}
+
+```{r character_plot_support, echo=FALSE, warning=FALSE, message=FALSE}
+# Filter only the tanks from specific PlayerID positions and select unique characters per game
+plot_data <- dataset %>%
+  filter(PlayerID %in% c(3, 4, 8, 9) & Character %in% support_heroes) %>%
+  distinct(GameID, Character, .keep_all = TRUE) %>%  # Keep only unique Character per GameID
+  group_by(Character) %>%
+  summarize(count = n())  # Count unique occurrences of each Character
+
+# Calculate the Margin of Error for the Character Proportion
+plot_data <- plot_data %>%
+  mutate(
+    total = sum(count),
+    proportion = count / total,
+    sd = sqrt(proportion * (1 - proportion)),
+    me = qt(0.975, count - 1) * (sd / sqrt(count))  # Margin of error for 99% confidence level
+  ) %>%
+  select(Character, proportion, me)  # Select only relevant columns
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.cap ="The confidence intervals are quite large due to small sample size. There is a bias towards four characters that I typically play: Illari, Juno, Mercy, and Moira."}
+# Filter the Overbuff data for only tank characters
+overbuff_plot <- overbuff_data %>% filter(Character %in% support_heroes)
+
+plot_data %>%
+  ggplot(aes(x = Character, y = proportion)) +
+  labs(
+    title = "Support Pick Rate",
+    subtitle = "Blue bars show in-game pick rates; Orange dots represent Overbuff pick rates",
+    y = "Pick Rate (95% CI)"
+  ) +
+  geom_col(fill = "#218ffe") +
+  geom_errorbar(aes(ymin = pmax(0, proportion - me), ymax = proportion + me), 
+                width = 0.2, color = "white") +  # Error bars
+  geom_point(data = overbuff_plot, aes(x = Character, y = Pick_Rate), 
+             color = "orange", size = 3, shape = 21, fill = "orange") +  # Overbuff points for tanks only
+  theme_ow2() +
+  theme(
+    axis.text.x = element_text(angle = 60, hjust = 1)  # Rotate x-axis text
+  )
+```
+
+\vspace{0.25cm}
+
+```{r}
+plot_data
+```
+
+**For support characters, the pick rate ranges from 0.0319 to 0.178**. The least picked support character is Brigitte, and the most picked is Moira. Comparing the 95% confidence intervals with the Overleaf data, there also appears to be a bias towards Mercy, Moira, Illari, and Juno. In fact, I predominantly played support class and cycle through these support characters in my games.
+
+\newpage
+
+### Win Rate
+
+**What is the top winning character for each role?** \vspace{0.25cm}
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+plot_data <- dataset %>%
+  filter(Result %in% c(-1, 1)) %>% mutate(Result=ifelse(Result==-1, 0, Result)) %>% # filter draws and make lose = 0
+  distinct(GameID, Character, .keep_all = TRUE) %>%  # Keep only unique Character per GameID
+  group_by(Character) %>%
+  summarize(win_rate=mean(Result), count=n()) %>%  # Count unique occurrences of each Character
+  mutate(
+    sd = sqrt(win_rate * (1 - win_rate)),
+    me = qt(0.975, count - 1) * (sd / sqrt(count))) %>% # Margin of error for 99% confidence level
+  select(-sd)
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.cap ="There are no significant differences between win rates for the Tank role."}
+# Filter the Overbuff data for only tank characters
+overbuff_plot <- overbuff_data %>% filter(Character %in% tank_heroes)
+
+plot_data %>% filter(Character %in% overbuff_plot$Character) %>%
+  ggplot(aes(x = Character, y = win_rate)) +
+  labs(
+    title = "Tank Win Rate",
+    subtitle = "Blue bars show in-game win rates; Orange dots represent Overbuff win rates",
+    y = "Win Rate (95% CI)"
+  ) +
+  geom_col(fill = "#218ffe") +
+  geom_errorbar(aes(ymin = pmax(0, win_rate - me), ymax = win_rate + me), 
+                width = 0.2, color = "white") +  # Error bars
+  geom_point(data = overbuff_plot, aes(x = Character, y = Win_Rate), 
+             color = "orange", size = 3, shape = 21, fill = "orange") +  # Overbuff points for tanks only
+  theme_ow2() +
+  theme(
+    axis.text.x = element_text(angle = 60, hjust = 1)  # Rotate x-axis text
+  )
+```
+
+\vspace{0.25cm}
+
+```{r}
+plot_data %>% filter(Character %in% overbuff_plot$Character)
+```
+
+**For tanks, the win rate ranges from 0.375 to 0.618**. Looking at the confidence intervals, there isn't enough data to see which characters are more likely to win a game. However, the data does show that there isn't a difference in win rate between my games and others. The plot above shows that Winston won the most, while Zarya lost the most.
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.cap ="There are no significant differences between win rates for the Damage role."}
+# Filter the Overbuff data for only tank characters
+overbuff_plot <- overbuff_data %>% filter(Character %in% damage_heroes)
+
+plot_data %>% filter(Character %in% overbuff_plot$Character) %>%
+  ggplot(aes(x = Character, y = win_rate)) +
+  labs(
+    title = "Damage Win Rate",
+    subtitle = "Blue bars show in-game win rates; Orange dots represent Overbuff win rates",
+    y = "Win Rate (95% CI)"
+  ) +
+  geom_col(fill = "#218ffe") +
+  geom_errorbar(aes(ymin = pmax(0, win_rate - me), ymax = win_rate + me), 
+                width = 0.2, color = "white") +  # Error bars
+  geom_point(data = overbuff_plot, aes(x = Character, y = Win_Rate), 
+             color = "orange", size = 3, shape = 21, fill = "orange") +  # Overbuff points for tanks only
+  theme_ow2() +
+  theme(
+    axis.text.x = element_text(angle = 60, hjust = 1)  # Rotate x-axis text
+  )
+```
+
+\vspace{0.25cm}
+
+```{r}
+plot_data %>% filter(Character %in% overbuff_plot$Character)
+```
+
+**For damage characters, the win rate ranges from 0.429 to 0.639**. Looking at the confidence intervals, there isn't enough data to see which characters are more likely to win a game. However, the data does show that there isn't a difference in win rate between my games and others. The plot above shows that Venture won the most, while Symmetra (closely followed by Torbjorn) lost the most.\vspace{0.25cm}
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.cap ="There are no significant differences between win rates for the Support role."}
+# Filter the Overbuff data for only support characters
+overbuff_plot <- overbuff_data %>% filter(Character %in% support_heroes)
+
+plot_data %>% filter(Character %in% overbuff_plot$Character) %>%
+  ggplot(aes(x = Character, y = win_rate)) +
+  labs(
+    title = "Support Win Rate",
+    subtitle = "Blue bars show in-game win rates; Orange dots represent Overbuff win rates",
+    y = "Win Rate (95% CI)"
+  ) +
+  geom_col(fill = "#218ffe") +
+  geom_errorbar(aes(ymin = pmax(0, win_rate - me), ymax = win_rate + me), 
+                width = 0.2, color = "white") +  # Error bars
+  geom_point(data = overbuff_plot, aes(x = Character, y = Win_Rate), 
+             color = "orange", size = 3, shape = 21, fill = "orange") +  # Overbuff points for tanks only
+  theme_ow2() +
+  theme(
+    axis.text.x = element_text(angle = 60, hjust = 1)  # Rotate x-axis text
+  )
+```
+
+\vspace{0.25cm}
+
+```{r}
+plot_data %>% filter(Character %in% overbuff_plot$Character)
+```
+
+**For support characters, the win rate ranges from 0.444 to 0.583**. Looking at the confidence intervals, there isn't enough data to see which characters are more likely to win a game. The plot above shows that Lifeweaver won the most, while Baptiste lost the most.
+
+\newpage
+
+### Swapping Characters
+
+**What are the average number of characters played by each player role during a game?** \vspace{0.25cm}
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.cap ="Each role typically plays 1-3 unique characters throughout a game."}
+# remove the hidden characters and get mean number of distinct characters for each playerID
+plot_data <- dataset %>% filter(Character != "Hidden") %>%
+  group_by(GameID, PlayerID) %>% 
+  distinct(Character) %>% 
+  reframe(characters=n()) %>%
+  select(-GameID)
+
+plot_data <- plot_data %>% mutate(
+  role=case_when(
+      PlayerID %in% c(0, 5) ~ "Tank",
+      PlayerID %in% c(1, 2, 6, 7) ~ "Damage",
+      PlayerID %in% c(3, 4, 8, 9) ~ "Support",
+  )
+)
+
+plot_data %>% ggplot(aes(x=role, y=characters)) +
+  labs(title="Unique Characters Played Per Role",
+       subtitle="Boxplot of the characters each the role per game.") +
+  geom_boxplot(
+    fill="white",
+    outlier.color = "orange",      # Color of the outlier points
+    color = "orange") + 
+  theme_ow2() + 
+  scale_y_continuous(breaks=1:7)
+```
+
+\vspace{0.25cm}
+
+```{r}
+plot_data %>% group_by(role) %>% 
+  reframe(avg_characters=mean(characters)) %>% 
+  arrange(desc(avg_characters))
+```
+
+It looks like Support characters are more likely to stick with 1-2 characters. Damage and Tank players, on the other hand, typically have 1-3 characters to swap to per game.
+
+\newpage
+
+**What are the average number of swaps done by each player role during a game?** \vspace{0.25cm}
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.cap ="The median number of swaps in a game is 1 for Tank and Damage, and 0 for support."}
+# Remove "Hidden" characters and calculate swaps per player based on character changes
+plot_data <- dataset %>%
+  filter(Character != "Hidden") %>%
+  arrange(GameID, SnapID) %>%  # Ensure data is ordered by Game and Snapshot
+  group_by(GameID, PlayerID) %>% 
+  mutate(
+    # Count swaps by checking if the current character differs from the previous snapshot's character
+    swap = if_else(Character != lag(Character, default = first(Character)), 1, 0)
+  ) %>%
+  summarise(total_swaps = sum(swap), .groups = "drop") %>%
+  select(-GameID) 
+
+plot_data <- plot_data %>%
+  mutate(
+    role = case_when(
+      PlayerID %in% c(0, 5) ~ "Tank",
+      PlayerID %in% c(1, 2, 6, 7) ~ "Damage",
+      PlayerID %in% c(3, 4, 8, 9) ~ "Support"
+    )
+  )
+
+plot_data %>%
+  ggplot(aes(x = role, y = total_swaps)) +
+  labs(
+    title = "Swaps Per Role",
+    subtitle = "Boxplot of the swaps done by each role per game."
+  ) +
+  geom_boxplot(
+    fill = "white",
+    outlier.color = "orange",
+    color = "orange"
+  ) + 
+  theme_ow2() + 
+  scale_y_continuous(breaks = 1:10)
+```
+
+\vspace{0.25cm}
+
+```{r}
+plot_data %>% group_by(role) %>% 
+  reframe(avg_swaps=mean(total_swaps)) %>%
+  arrange(desc(avg_swaps))
+```
+
+Tank and damage characters swap more frequently compared to the support role. Support characters are least likely to swap 3+ times, whereas damage and tank players are least likely to swap 6+ times.\newline
+
+\newpage
+
+### Analysis of Tank Swaps
+
+(1) The number of swaps done by the Tank role is positively correlated with winning.
+
+Players in the Overwatch community coined the term 'counter-watch\` to describe the adaptive strategy of picking a character that counters the enemy team's composition. When one character swaps, a character on the other swaps in response, and it repeats. I'm curious about how often Tanks (arguably an important role in the game) swap and if there are correlations with swap frequency and with game outcome. \vspace{0.25cm}
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.cap ="Histogram of the number of swaps a Tank does in a game."}
+# Remove "Hidden" characters and calculate swaps per player based on character changes
+plot_data <- dataset %>%
+  filter(Character != "Hidden" & PlayerID %in% c(0, 5) & Result != 0) %>%
+  arrange(GameID, SnapID) %>%  # Ensure data is ordered by Game and Snapshot
+  group_by(GameID, PlayerID) %>% 
+  mutate(
+    # Count swaps by checking if the current character differs from the previous snapshot's character
+    swap = if_else(Character != lag(Character, default = first(Character)), 1, 0)
+  ) %>%
+  reframe(total_swaps = sum(swap), result=Result) %>% select(-GameID, -PlayerID)
+
+plot_data %>% ggplot(aes(x=total_swaps)) + 
+  geom_bar(fill="orange") +
+  labs(
+    title="Distribution of Tank Swaps",
+    x="Total Swaps", y="Count"
+  ) +
+  theme_ow2() +
+  scale_x_continuous(breaks=0:7)
+```
+
+\vspace{0.25cm}
+
+The plot above shows the distribution of tank swapping with the majority of games having tanks not swapping at all.
+
+**(Continued on next page)**
+
+\newpage
+
+**Is there a correlation between swapping and game outcome?**
+
+\*given that there are only 2 draws, they have been excluded from data plotted data below
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.cap ="The median number of Tank swaps is higher for a game that resulted in a loss (-1)."}
+plot_data %>% ggplot(aes(x=as.factor(result), y=total_swaps)) + 
+  labs(
+    title="Boxplot of Total Tank Swaps by Game Outcome",
+    subtitle="-1 is Lose and 1 is Win.",
+    x="Game Outcome",
+    y="Total Swaps"
+  ) +
+  geom_boxplot(
+    fill = "white",
+    outlier.color = "orange",
+    color = "orange") + 
+  theme_ow2()
+```
+
+\vspace{0.25cm}
+
+Based on the box plot, it looks like tanks are more likely to swap when the game outcome is a Loss. Perhaps they lost because they swap more or they swapped more because they were losing.\vspace{0.25cm}
+
+```{r}
+# The Kendall's rank test is used due to the large amount of ties
+cor.test(plot_data$total_swaps, plot_data$result, method="kendall")
+```
+
+There appears to be a weak negative correlation between tank swap frequency and game outcome with a p-value less than 0.05. \vspace{0.25cm}
+
+**Is there a correlation between ally tank swap count and enemy tank swap count?**
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# Remove "Hidden" characters and calculate swaps per player based on character changes
+plot_data <- dataset %>%
+  filter(Character != "Hidden" & PlayerID %in% c(0, 5)) %>%
+  arrange(GameID, SnapID) %>%  # Ensure data is ordered by Game and Snapshot
+  group_by(GameID, PlayerID) %>% 
+  mutate(
+    # Count swaps by checking if the current character differs from the previous snapshot's character
+    swap = if_else(Character != lag(Character, default = first(Character)), 1, 0)
+  ) %>%
+  summarise(total_swaps = sum(swap), .groups = "drop") %>% 
+  pivot_wider(names_from = PlayerID, values_from = total_swaps)
+
+# Calculate the correlation between the two tanks
+plot_data <- plot_data %>% filter(!is.na(`0`) & !is.na(`5`)) %>% select(-GameID)
+
+cor.test(plot_data$`0`, plot_data$`5`, method = "spearman")
+```
+
+There appears to be a weak positive correlation between the number of swaps done by the Tanks from each team.
+
+\vspace{1cm}
+
+## Stats
+
+**What is the average win rate?**
+
+```{r}
+dataset %>% distinct(GameID, .keep_all = TRUE) %>% 
+  filter(Result != 0) %>%
+  summarize(win_rate=mean(Result==1))
+```
+
+\vspace{0.25cm}
+
+**How are metrics distributed for K, A, D, Damage, H, MIT?**
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.cap ="Density plots of player metrics before removing extreme values."}
+plot_data <- dataset %>% 
+  select(K, A, D, Damage, H, MIT, Time) %>% 
+  pivot_longer(cols=c(K, A, D, Damage, H, MIT))
+
+plot_data %>% ggplot(aes(x=value)) +
+  geom_density() + 
+  labs(title="Density Plot of Player Metrics",
+       x="Metrics", y="Density") +
+  facet_wrap(~name, scales = "free")
+```
+
+There appears to be some outliers in the data. For example, there is a slight bump in 100 kills, which means that the OCR reader likely adds an extra zero to `10`. 100 Kills are very unlikely in a 15 minute game. This will be more evidence in the next plot.
+
+\vspace{0.25cm}
+
+**How do the metrics change over time?**
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.cap="Density plots with regression trend of data without extreme values removed. These outliers are more evident when data is faceted by time."}
+plot_data %>% ggplot(aes(x=Time, y=value)) +
+  geom_point(alpha=0.2) +
+  geom_smooth(method = "lm", formula = y ~ x) +
+  labs(title="Density Plot of Player Metrics",
+     x="Metrics", y="Density") +
+  facet_wrap(~name, scales = "free")
+```
+
+Viewing player metrics over time, there are some clear outliers. For example, Deaths (`D`) has a value more than 60 at around 5 minutes, `Damage` has more than 75,000 around 5 minutes, and Kills (`K`) has 100 near the start of the game. These will need to be kept in mind when doing predictive modeling.
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.cap="Boxplot of data facted by time, without extreme values removed.", fig.pos="H"}
+plot_data %>% mutate(value=value/Time) %>% # Normalize metrics by Time
+  ggplot(aes(x=value)) +
+  geom_boxplot() + facet_wrap(~name, scales = "free") +
+  labs(
+    title="Metrics By Time (unadjusted)",
+    y="Value",
+    x="Time"
+  )
+```
+
+```{r, fig.cap="Boxplot of corrected data facted by time.", fig.pos="H"}
+adjusted_dataset <- dataset %>%
+  mutate(
+    across(c(K, A, D, Damage, H, MIT), ~ .x / Time),  # Normalize metrics by Time
+    K = pmin(K, 5),
+    A = pmin(A, 4),
+    D = pmin(D, 3),
+    Damage = pmin(Damage, 2500),
+    H = case_when(
+      PlayerID %in% c(0, 5) ~ pmin(H, 600),
+      PlayerID %in% c(1, 2, 6, 7) ~ pmin(H, 400),
+      TRUE ~ pmin(H, 2500)
+    ),
+    MIT = pmin(MIT, 2500)
+  )
+
+adjusted_dataset %>% select(PlayerID, K, A, D, Damage, H, MIT, Time) %>%
+  pivot_longer(cols = c(K, A, D, Damage, H, MIT)) %>%
+  ggplot(aes(x = value)) +
+  geom_boxplot() +
+  facet_wrap(~name, scales = "free") +
+  labs(
+    title = "Metrics By Time (adjusted)",
+    y = "Value",
+    x = "Time"
+  )
+```
+
+In the **adjusted version**, clipping is applied to limit extreme outliers; the capped-limits were determined by previous recorded data and industry knowledge (i.e., gaming experience). For example, Kills (`K`) are capped at 5 per unit of time, Assists (`A`) at 4, and `Damage` at 2500. Healing (`H`) is further tailored by role, with lower caps for damage and tank players. This ensures outliers don't disproportionately skew the results while aligning metrics with role-specific expectations. This technique will be used during modeling.
+
+\vspace{1cm}
+
+## Analysis of Healing and Damage
+
+Time to analyze these hypotheses.
+
+(2) Healing is not correlated with the game outcome.
+
+(3) Damage is positively correlated with winning.
+
+\vspace{0.25cm}
+
+After adjusting the values and removing the outliers, it's time to see if the amount of team healing/damage is positively correlated to winning.
+
+```{r, echo=F}
+# Get the last snapshot for each game (Remove draws)
+plot_data <- adjusted_dataset %>% filter(Result != 0) %>%
+  mutate(across(c(K, A, D, Damage, H, MIT), ~ .x * Time)) %>% # adjust to see actual values
+  group_by(GameID) %>%
+  filter(SnapID==max(SnapID)) %>%
+  select(GameID, PlayerID, K, A, D, Damage, H, MIT, Result) %>% 
+  mutate(team = ifelse(PlayerID <= 4, "ally", "enemy")) %>%
+  group_by(GameID, team) %>%
+  summarize(total_damage = sum(Damage), total_healing = sum(H),
+            Result=unique(ifelse(team=="ally", Result, Result*-1)),
+            .groups='drop'
+          )
+```
+
+```{r dmg_heal, echo=F, fig.cap="Density plot of total damage and total healing for all teams for each game by game outcome."}
+plot_data %>%
+  select(total_damage, total_healing, Result) %>%
+  mutate(Result = factor(Result, levels = c(-1, 1), labels = c("Lose", "Win"))) %>%
+  pivot_longer(cols = c(total_damage, total_healing)) %>%
+  ggplot(aes(x = value, group = Result)) +
+  geom_density(aes(fill = Result), alpha = 0.4) +
+  facet_wrap(~name, scales = 'free_x') +
+  labs(fill = "Game Outcome")
+```
+
+The plot above shows that there are only slight differences between the two game outcomes.
+
+**Let's perform a statistical test to see the correlation**. But first we need to see if the values are normally distributed with p-value = 0.05. To reduce the Type 1 error 0.05 will be divided by the number of normality tests being performed (4) making the **adjusted p-value 0.0125**.\vspace{0.25cm}
+
+```{r, warning=F}
+# Filter and select data for the ally team
+ally_data <- plot_data %>%
+  filter(team == 'ally') %>%
+  select(total_damage, total_healing, Result)
+
+# Filter and select data for the enemy team
+enemy_data <- plot_data %>%
+  filter(team == 'enemy') %>%
+  select(total_damage, total_healing, Result)
+
+# Perform Shapiro-Wilk tests for the ally team
+ally_dmg_test <- shapiro.test(ally_data$total_damage)
+ally_heal_test <- shapiro.test(ally_data$total_healing)
+
+# Create a data frame with Shapiro-Wilk results for the ally team
+shapiro_results <- data.frame(
+  Metric = c("Total Damage", "Total Healing"),
+  Team = c("Ally", "Ally"),
+  Statistic = c(ally_dmg_test$statistic, ally_heal_test$statistic),
+  P_Value = c(ally_dmg_test$p.value, ally_heal_test$p.value)
+)
+
+# Perform Shapiro-Wilk tests for the enemy team
+enemy_dmg_test <- shapiro.test(enemy_data$total_damage)
+enemy_heal_test <- shapiro.test(enemy_data$total_healing)
+
+# Append Shapiro-Wilk results for the enemy team
+shapiro_results <- shapiro_results %>%
+  bind_rows(
+    data.frame(
+      Metric = c("Total Damage", "Total Healing"),
+      Team = c("Enemy", "Enemy"),
+      Statistic = c(enemy_dmg_test$statistic, enemy_heal_test$statistic),
+      P_Value = c(enemy_dmg_test$p.value, enemy_heal_test$p.value)
+    )
+  )
+
+# Print the results
+shapiro_results <- shapiro_results %>% mutate(reject=P_Value < 0.05/4)
+print(shapiro_results)
+```
+
+```{r, echo=F}
+rm(ally_heal_test, ally_dmg_test, enemy_heal_test, enemy_dmg_test)
+```
+
+The table above shows that the `Total Damage` follows a normal distribution, while `Total Healing` does not. Therefore, Pearson's correlation test will be used to assess the relationship between `Damage` and game outcome (`Result`) due to normality. In contrast, Spearman's rank correlation test will be used to assess the relationship between `Total healing` and game outcome, as it is a non-parametric method suitable for non-normal data.
+
+To ensure that data remains independent, metrics from my team and the enemy team were tested separately for correlation with game outcome. Given the multiple tests for correlation, a p-value of 0.025 = 0.05 / 2 tests, will be used to see if there are correlations between Healing vs. Outcome and Damage vs. Outcome.\vspace{0.25cm}
+
+**Time to calculate the correlations**
+
+```{r, warning=F}
+cor.test(ally_data$total_damage, ally_data$Result, method='pearson')
+```
+
+```{r, warning=F}
+cor.test(enemy_data$total_damage, enemy_data$Result, method='pearson')
+```
+
+```{r, warning=F}
+cor.test(ally_data$total_healing, ally_data$Result, method='spearman')
+```
+
+```{r, warning=F}
+cor.test(enemy_data$total_healing, enemy_data$Result, method='spearman')
+```
+
+Given that we are doing two correlations for Healing vs Outcome and two correlations for Damage vs Outcome, the p-value set (based Bonferroni's correction) is 0.025. Out of all four tests, only the correlation between enemy Total Damage and game outcome was statistically significant with a weak positive correlation of 0.1888383 and p-value of 0.01311.
+
+\newpage
+
+## Gamemode
+
+**What are the frequency of Game Modes?** \vspace{0.25cm}
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.cap ="Bar plot of the frequency for each game mode."}
+plot_data <- dataset %>% filter(Mode != "Unknown") %>% distinct(GameID, .keep_all=T)
+  
+plot_data %>% ggplot(aes(x=Mode)) +
+  labs(title="Frequency of Mode", y='Count') +
+  geom_bar(fill = "#218ffe") + 
+  theme_minimal() + 
+  theme_ow2() +
+  theme(axis.text.x = element_text(hjust=1, angle=50))
+```
+
+There are five times of games modes in the dataset. The most played is Payload and the least played is Clash (the newest game mode).
+
+\vspace{0.25cm}
+
+**What are the associated win rates for the game modes? (Continued on next page)**
+
+```{r, echo=FALSE, fig.cap="Error plot of win rates of each mode with 95\\% confidence. There are no clear differences."}
+mode_plot_data <- plot_data %>% filter(Result!=0) %>% group_by(Mode) %>% 
+  reframe(win_rate=mean(Result==1),
+          sd=win_rate*(1-win_rate),
+          me=qt(0.975, n()-1)*sd/sqrt(n()))
+
+mode_plot_data %>% ggplot(aes(x = reorder(Mode, win_rate), y = win_rate)) +
+  geom_point(size = 3, color = "#218ffe") +
+  geom_errorbar(
+    aes(ymin = pmax(0, win_rate - me), ymax = pmin(1, win_rate + me)), 
+    width = 0.2, 
+    color = "#218ffe"
+  ) +  
+  coord_flip() +
+  scale_y_continuous(limits = c(0, 1), expand = c(0, 0)) +
+  labs(
+    title = "Win Rate by Mode with Error Bars",
+    x = "Mode",
+    y = "Win Rate"
+  ) +
+  theme_ow2()
+```
+
+```{r}
+# Let's do a statistical test to see if they are different from one another
+plot_data %>% filter(Result!=0) %>% select(Mode, Result) %>% table
+```
+
+```{r}
+test_data <- plot_data %>% filter(Result!=0) %>% select(Mode, Result)
+
+kruskal.test(Mode ~ Result, data=test_data)
+```
+
+There doesn't seem to be a statistically significant difference between win rates for Game Modes.
+
+\newpage
+
+## Map
+
+**What are the frequency of maps?**
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.cap="Histogram of the map frequencies. They are all below 30 which means the data should be taken with a grain of salt."}
+plot_data <- dataset %>% filter(Map != "UNKNOWN") %>% # remove unknown
+  distinct(GameID, .keep_all=T)
+  
+plot_data %>% ggplot(aes(x=Map)) +
+  labs(title="Frequency of Maps", y='Count') +
+  geom_bar(fill = "#218ffe") + 
+  theme_minimal() + 
+  theme_ow2() +
+  theme(axis.text.x = element_text(hjust=1, angle=50)) + 
+  scale_y_continuous(breaks=1:10)
+```
+
+The map selection appears to resemble a uniform distribution. **Junkertown** was the most played with a frequency of 10 games, and **Eichenwalde** is the least played with a frequency of 2 games.
+
+\newpage
+
+**What are the associated win rates for the maps?**
+
+```{r, echo=FALSE, fig.cap="Error bar plot of the win rate for each map with 95\\% confidence. Hollywood has a 100\\% win rate while the two maps at the bottoms aren't overlapping with many of the other maps."}
+map_plot_data <- plot_data %>% filter(Result!=0) %>% group_by(Map) %>% 
+  reframe(win_rate=mean(Result==1),
+          sd=win_rate*(1-win_rate),
+          me=qt(0.975, n()-1)*sd/sqrt(n()))
+
+map_plot_data %>% ggplot(aes(x = reorder(Map, win_rate), y = win_rate)) +
+  geom_point(size = 3, color = "#218ffe") +
+  geom_errorbar(
+    aes(ymin = pmax(0, win_rate - me), ymax = pmin(1, win_rate + me)), 
+    width = 0.2, 
+    color = "#218ffe"
+  ) +  
+  coord_flip() +
+  scale_y_continuous(limits = c(0, 1), expand = c(0, 0)) +
+  labs(
+    title = "Win Rate by Map with Error Bars",
+    x = "Map",
+    y = "Win Rate"
+  ) +
+  theme_ow2()
+```
+
+It looks like Maps like `Watchpoint: Gilbratar` and `Aldersbrunn` have a lower win rate compared to maps like `Nepal` and `Oasis`, which have higher win rate of 50%+. It should be noted that map sample size is small and may not be fully representative of the population. The maps have 5-6 samples on average.
+
+\vspace{1cm}
+
+# Modeling
+
+## Objective
+
+The goal of modeling is to predict whether a player is going to win based on information available from only the current screenshot of the leaderboard.
+
+Some things to consider are:
+
+-   The extreme values for player metrics (error due to OCR)
+
+-   The unknown values for Map and Mode (error due to OCR)
+
+-   That player placement is static and based on the character being played. For example from a damage character's perspective, they will always be playerID 1. From a support player's perspective, they will always be playerID 3. For this reason, it would be ideal to shuffle playerIDs for the same role on the same team to improve generalization and reduce bias. Especially for support characters. (bias due to leaderboard presentation)
+
+## Preprocessing
+
+1.  Clean the dataset based on the data exploration by clipping the player metrics and dropping Map and Mode with the value of `Unknown`.
+
+```{r}
+clean_dataset <- dataset %>% 
+  filter(Map != 'UNKNOWN' & Mode != 'Unknown') %>%
+  select(GameID, SnapID, PlayerID, K, A, D, Damage, H, MIT, Time, Mode, Map, Result) %>%
+  mutate(
+    across(c(K, A, D, Damage, H, MIT), ~ .x / Time),  # Normalize metrics by Time
+    K = pmin(K, 5),
+    A = pmin(A, 4),
+    D = pmin(D, 3),
+    Damage = pmin(Damage, 2500),
+    H = case_when(
+      PlayerID %in% c(0, 5) ~ pmin(H, 600),
+      PlayerID %in% c(1, 2, 6, 7) ~ pmin(H, 400),
+      TRUE ~ pmin(H, 2500)
+    ),
+    MIT = pmin(MIT, 2500)
+  )
+
+# Ensure that the categorical variables are factors
+clean_dataset <- clean_dataset %>% mutate(
+  Mode=as.factor(Mode),
+  Map=as.factor(Map)
+)
+
+# adjust the game outcome to be between 0 and 1 (drop the drawn games)
+clean_dataset <- clean_dataset %>% 
+  filter(Result!=0) %>% 
+  mutate(Result=(Result+1)/2,
+         Result=as.factor(Result), 
+         Result=relevel(Result, ref = "1"))
+
+# show example data from a single snapshot
+clean_dataset %>% arrange(SnapID) %>% head(n=10)
+```
+
+\vspace{0.25cm}
+
+2.  Group by snapshot id (`snapID`) and then shuffle the playerIDs to improve generalization
+
+```{r}
+set.seed(42) # for reproducibility
+
+swap_ids <- function(ids, index1, index2){
+  temp_id <- ids[index1]
+  ids[index1] <- ids[index2]
+  ids[index2] <- temp_id
+  return(ids)
+}
+
+# row [tank1, dmg1, dmg1, supp1, supp1, tank2, dmg2, dmg2, supp2, supp2]
+
+shuffle_players <- function(ids) {
+  # randomly shuffle damage for team 1?
+  if (sample(0:1, 1) == 1) {
+    ids <- swap_ids(ids, 2, 3)
+  }
+  
+  # randomly shuffle damage for team 2?
+  if (sample(0:1, 1) == 1) {
+    ids <- swap_ids(ids, 7, 8)
+  }
+  
+  # randomly shuffle support for team 1?
+  if (sample(0:1, 1) == 1) {
+    ids <- swap_ids(ids, 4, 5)
+  }
+  
+  # randomly shuffle support for team 2?
+  if (sample(0:1, 1) == 1) {
+    ids <- swap_ids(ids, 9, 10)
+  }
+  
+  return (ids)
+}
+
+shuffled_clean_dataset <- clean_dataset %>%
+  group_by(SnapID) %>%
+  group_modify(~ {
+    # Shuffle the PlayerID vector for the current group
+    .x$PlayerID <- shuffle_players(.x$PlayerID)
+    return(.x)
+  }) %>%
+  ungroup()
+```
+
+\vspace{0.25cm}
+
+3.  Combine the data from each snapshot into a single observation
+
+```{r}
+shuffled_clean_dataset <- shuffled_clean_dataset %>% group_by(GameID, SnapID) %>%
+  pivot_wider(
+    names_from = PlayerID, 
+    values_from = c(K, A, D, Damage, H, MIT),
+    names_prefix = "player"
+  ) %>% ungroup() %>% 
+  select(-SnapID, -GameID) # remove unnecessary details
+
+head(shuffled_clean_dataset)
+```
+
+\vspace{0.5cm}
+
+## Training
+
+```{r}
+set.seed(42)
+# create the train, test, and validation set
+# 80% for train 10% for test and 10% for validation
+train_ind <- createDataPartition(shuffled_clean_dataset$Result, p=0.8, list=F)
+train_set <- shuffled_clean_dataset[train_ind,]
+remaining_set <- shuffled_clean_dataset[-train_ind,]
+
+test_ind <- createDataPartition(remaining_set$Result, p=0.5, list=F)
+test_set <- remaining_set[test_ind,]
+val_set <- remaining_set[-test_ind,]
+```
+
+## Base Model (Logistic Regression)
+
+```{r, cache=TRUE}
+# First find the best CV value using the validation set
+set.seed(42)
+model = train(Result ~.,
+              data=train_set,
+              method='glmnet',
+              trControl=trainControl(method='cv', number=5),
+              preProc = c("center", "scale"))
+
+pred <- predict(model, newdata=val_set)
+confusionMatrix(pred, val_set$Result)
+```
+
+```{r, cache=TRUE}
+model = train(Result ~.,
+              data=train_set,
+              method='glmnet',
+              trControl=trainControl(method='cv', number=10),
+              preProc = c("center", "scale"))
+
+pred <- predict(model, newdata=val_set)
+confusionMatrix(pred, val_set$Result)
+```
+
+Based on the different values, a CV value of 10 appears to perform better on the dataset. Now, let's see how it performs on the test_set.
+
+```{r, cache=TRUE}
+# train the model to see the base results
+base_model = train(Result ~., 
+                   data=train_set, 
+                   method='glmnet', 
+                   trControl=trainControl(method='cv', number=10),
+                   preProc = c("center", "scale"))
+
+pred <- predict(base_model, newdata=test_set)
+confusionMatrix(pred, test_set$Result)
+```
+
+```{r}
+pred_prob <- predict(base_model, newdata = test_set, type = "prob")[,1]
+roc_obj <- roc(test_set$Result, pred_prob)
+
+# Plot ROC curve
+plot(roc_obj)
+print(auc(roc_obj))
+```
+
+## Model 2 (with regularization finetune)
+
+Now, I'm going to finetune the lambda and alpha values using the validation set to try to get a better score.
+
+```{r, cache=TRUE}
+# train the model to see the base results
+set.seed(1)
+model_2 = train(Result ~., 
+               data=train_set, 
+               method='glmnet',
+               preProc = c("center", "scale"),
+               trControl=trainControl(method='cv', number=10),
+                tuneGrid=expand.grid(alpha = seq(0, 1, length=10), 
+                lambda = seq(0.0001, 1, length = 100))
+              )
+pred <- predict(model_2, newdata=val_set)
+print(model_2$bestTune)
+```
+
+```{r, cache=TRUE}
+# train the model with the fine-tuned reg
+set.seed(42)
+model_2 = train(Result ~., 
+                data=train_set, 
+                method='glmnet', 
+                trControl=trainControl(method='cv', number=10),
+                tuneGrid=data.frame(alpha=0, lambda=.1011),
+                preProc = c("center", "scale"))
+
+pred <- predict(model_2, newdata = test_set)
+confusionMatrix(pred, test_set$Result)
+```
+
+```{r}
+pred_prob <- predict(model_2, newdata = test_set, type = "prob")[,1]
+roc_obj <- roc(test_set$Result, pred_prob)
+
+# Plot ROC curve
+plot(roc_obj)
+print(auc(roc_obj))
+```
+
+## Base Model (RandomForest)
+
+```{r, cache=TRUE}
+set.seed(42)
+control <- trainControl(method='cv', number=10, search = 'grid')
+
+rf_model <- train(Result ~ ., 
+                  data = train_set,
+                  method = "rf",
+                  metric = "Accuracy",
+                  trControl = control,
+                  importance = TRUE)
+
+# View the model details
+print(rf_model)
+```
+
+```{r}
+pred <- predict(rf_model, newdata = test_set)
+confusionMatrix(pred, test_set$Result)
+```
+
+```{r}
+# test on validation
+pred <- predict(rf_model, newdata = val_set)
+confusionMatrix(pred, val_set$Result)
+```
+
+```{r}
+pred_prob <- predict(rf_model, newdata = test_set, type = "prob")[,1]
+roc_obj <- roc(test_set$Result, pred_prob)
+
+# Plot ROC curve
+plot(roc_obj)
+print(auc(roc_obj))
+```
+
+## Model 2 (hyperparameter finetune)
+
+```{r, cache=TRUE}
+set.seed(42)
+
+# Define repeated cross-validation control with random search
+control <- trainControl(method = "repeatedcv", 
+                        number = 5, 
+                        repeats = 3, 
+                        search = "random")
+
+# Random search will randomly pick `tuneLength` combinations
+tune_length <- 5  # Number of random combinations to test
+
+# Train the Random Forest model with random search
+rf_tuned <- train(
+  Result ~ ., 
+  data = train_set,
+  method = "rf",
+  metric = "Accuracy",
+  trControl = control,
+  tuneLength = tune_length,
+  importance = TRUE
+)
+
+# View the tuned model
+print(rf_tuned)
+```
+
+```{r}
+pred <- predict(rf_tuned, newdata = test_set)
+confusionMatrix(pred, test_set$Result)
+```
+
+```{r}
+# test on validation
+pred <- predict(rf_tuned, newdata = val_set)
+confusionMatrix(pred, val_set$Result)
+```
+
+```{r}
+pred_prob <- predict(rf_tuned, newdata = test_set, type = "prob")[,1]
+roc_obj <- roc(test_set$Result, pred_prob)
+
+# Plot ROC curve
+plot(roc_obj)
+print(auc(roc_obj))
+```
+
+# Results and Discussion
+
+## Model Performance
+
+```{=tex}
+\begin{table}[h]
+\centering
+\begin{tabular}{|l|c|c|c|c|}
+\hline
+Model Name & Accuracy* & F1-Score & AUC \\ \hline
+Base LR    & 0.8162 & 0.7967 & 0.9126   \\ \hline
+Tuned LR   & 0.7989 & 0.7768 & 0.8929   \\ \hline
+Base RF    & 0.9626 & 0.9612 & 0.9958   \\ \hline
+Tuned RF   & 0.9634 & 0.9624 & 0.9950   \\ \hline
+\end{tabular}
+\caption{Table of the test model performances. *Accuracy is balanced}
+\end{table}
+```
+The data was split into three sets: the train set, validation set, and test set (final holdout). The validation set was used for hyperparameter tuning of the model. Table 1, above, shows that the hyperparameter-tuned model for Logistic Regression performed poorly compared to the base model without tuning. This could likely be due to hypercollinearity in the training set or lack of generalization from the validation set. The best performing models were the RF models with the hyperparameter-tuned RF achieving a balanced accuracy of 96.34% and AUC of 0.995. This is a 14.72% increase in Accuracy and 16.57% increase in F1-score, compared to the best performing LR model.
+
+## Insights from Results
+
+### Hypothesis Results
+
+**(1) The number of swaps done by the Tank role is positively correlated with winning.**
+
+There was a weak negative correlation between tank swap frequency and game outcome (Kendall's tau = -0.1183, p \< 0.001), suggesting that swapping more as tank signals a losing game outcome. Figure 10, shows that losing games do have an increase in swaps with a median of 2, compared to a median of 1 for winning games. Given the results, we can reject the hypothesis that tank swapping is positively associated with winning.
+
+**(2) Healing is not correlated with the game outcome.**
+
+Very weak correlations were found, however they were not statistically significant. Healing was found to have a correlation of -0.14 for ally total healing vs game outcome (p=0.8523), and a correlation of 0.086 for enemy total healing vs game outcome (p=0.2644). This shows that healing isn't a good predictor for game performance.
+
+**(3) Damage is positively correlated with the winning.**
+
+The results shows that, interestingly, only enemy total damage was found to have a statistically significant correlation. Enemy total damage has a weak positive correlation with their likelihood of winning (r = 0.189, p=0.01311). The 95% confidence interval for the correlation coefficient ranges from 0.04 to 0.329. Ally total damage, on the other hand, had a Pearson's r coefficient of 0.0475 and p-value of 0.5362.
+
+### Feature Importances
+
+Below are the top 20 feature importances of both the Base RF model and the Hyperparameter-Tuned RF Model. What is interesting is that the Tuned RF Model has more features that are given high importance, compared to the base results. For example, there are 14 features in the right plot that have an importance of 70 or more. On the left, there are only 3 features with an importance above 70. **Given that the top 20 features in the best performing model are only player metrics, the following analysis will focus on those**.
+
+```{r, echo=F, fig.cap="Feature importances of both RF models."}
+plot1 <- plot(varImp(rf_model), top = 20, main = "Base RF Model")
+plot2 <- plot(varImp(rf_tuned), top = 20, main = "Tuned RF Model")
+
+grid.arrange(plot1, plot2, ncol = 2)
+```
+
+```{r, echo=F}
+set.seed(42)
+
+plot_data <- varImp(rf_tuned)$importance %>%
+  rownames_to_column(var='Feature') %>%
+  #filter(`1` > 70) %>% # get features with importance greater than 70
+  filter(str_detect(Feature, "_player(?=\\d$)")) %>%
+  arrange(desc(`1`)) %>% select(Feature, `1`) %>% setNames(c("Feature", "Importance")) %>%
+  separate(col=Feature, into=c("Feature", "Role"), sep='_player(?=\\d$)', remove=FALSE) %>%
+  mutate(Team = ifelse(Role <= 4, "Ally", "Enemy"),
+         Role = case_when(
+           Role %in% c(0, 5) ~ "Tank",
+           Role %in% c(1, 2, 6, 7) ~ "Damage",
+           Role %in% c(3, 4, 8, 9) ~ "Support",
+           TRUE ~ "NA"
+         )) %>%
+  filter(!is.na(Role)) %>%
+  select(Feature, Importance, Role, Team)
+
+boot_samples <- replicate(1000,
+  plot_data %>% group_by(Team, Role) %>%
+  reframe(avg_importance = mean(sample(Importance, n(), replace=T))) %>%
+  unite(col = "name", c("Team", "Role")) %>%
+  pivot_wider(values_from = "avg_importance", names_from = "name"),
+  simplify = F)
+```
+
+```{r, echo=F, fig.cap="Error plot of the average confidence for each group combination of Team and Role. A 99\\% confidence interval is used."}
+plot_data <- bind_rows(boot_samples) %>% 
+  summarize(across(everything(), list(mean=mean,sd=sd))) %>%
+  pivot_longer(cols=everything(), names_to="stat_col") %>%
+  separate(col="stat_col", into=c("Team", "Role", "Statistic")) %>%
+  unite(col = "name", c("Team", "Role")) %>%
+  pivot_wider(names_from=Statistic, values_from=value) %>%
+  mutate(me = qt(0.995, 999) * sd/sqrt(1000)) %>%
+  mutate(mean = mean/100, sd = sd/100, me = me/100)
+
+plot_data %>% ggplot(aes(x = name, y = mean)) +
+  geom_point(size = 3, color = "#218ffe") +
+  geom_errorbar(
+    aes(ymin = pmax(0, mean - me), ymax = pmin(1, mean + me)), 
+    width = 0.2, 
+    color = "#218ffe"
+  ) +  
+  coord_flip() +
+  scale_y_continuous(limits = c(0.44, 0.61), expand = c(0, 0)) +
+  labs(
+    title = "Bootstrapped Grouped Feature Importance",
+    subtitle = "(1000 Iterations, Original Sample Size of Groups)",
+    x = "Name",
+    y = "Average Importance"
+  ) +
+  theme_ow2()
+```
+
+The feature importances were grouped by team and player role and a bootstrapped average importance was calculated for all six groups. The plot shows that damage player metrics are the most important. I believe that this is because of two reasons: (1) enemy damage is weakly correlated with game outcome, and (2) regularization caused the model to favor Damage and Kills of the enemy team due to them being a decent aggregate of total players killed on my team.
+
+Lastly, the confidence intervals for the tank role are overlapping and are of high importance, compared to the other groups. This underscores the importance of the tank role. Of the top 20 features for Tuned RF, the tank metrics included were damage mitigation (`MIT`) and kills (`K`). \vspace{0.5cm}
+
+```{r, echo=F}
+set.seed(42)
+
+plot_data <- varImp(rf_tuned)$importance %>%
+  rownames_to_column(var='Feature') %>%
+  #filter(`1` > 70) %>% # get features with importance greater than 70
+  filter(str_detect(Feature, "_player(?=\\d$)")) %>%
+  arrange(desc(`1`)) %>% select(Feature, `1`) %>% setNames(c("Feature", "Importance")) %>%
+  separate(col=Feature, into=c("Feature", "Role"), sep='_player(?=\\d$)', remove=FALSE) %>%
+  mutate(Team = ifelse(Role <= 4, "Ally", "Enemy"),
+         Role = case_when(
+           Role %in% c(0, 5) ~ "Tank",
+           Role %in% c(1, 2, 6, 7) ~ "Damage",
+           Role %in% c(3, 4, 8, 9) ~ "Support",
+           TRUE ~ "NA"
+         )) %>%
+  filter(!is.na(Role)) %>%
+  select(Feature, Importance, Role, Team)
+
+boot_samples <- replicate(1000,
+  plot_data %>% group_by(Role, Feature) %>%
+  reframe(avg_importance = mean(sample(Importance, n(), replace=T))) %>%
+  unite(col = "name", c("Role", "Feature")) %>%
+  pivot_wider(values_from = "avg_importance", names_from = "name"),
+  simplify = F)
+```
+
+```{r, echo=F, fig.cap="Error plot of the average confidence for each group combination of Player Metric (i.e., K, A, D, Damage, H, MIT) and Role. A 99\\% confidence interval is used."}
+plot_data <- bind_rows(boot_samples) %>% 
+  summarize(across(everything(), list(mean=mean,sd=sd))) %>%
+  pivot_longer(cols=everything(), names_to="stat_col") %>%
+  separate(col="stat_col", into=c("Role", "Feature", "Statistic")) %>%
+  unite(col = "name", c("Role", "Feature")) %>%
+  pivot_wider(names_from=Statistic, values_from=value) %>%
+  mutate(me = qt(0.995, 999) * sd/sqrt(1000)) %>%
+  mutate(mean = mean/100, sd = sd/100, me = me/100)
+
+plot_data %>% ggplot(aes(x = reorder(name, mean), y = mean)) +
+  geom_point(size = 3, color = "#218ffe") +
+  geom_errorbar(
+    aes(ymin = pmax(0, mean - me), ymax = pmin(1, mean + me)), 
+    width = 0.2, 
+    color = "#218ffe"
+  ) +  
+  coord_flip() +
+  scale_y_continuous(limits = c(0.25, 0.8), expand = c(0, 0)) +
+  labs(
+    title = "Bootstrapped Grouped Feature Importance",
+    subtitle = "(1000 Iterations, Original Sample Size of Groups)",
+    x = "Name",
+    y = "Average Importance"
+  ) +
+  theme_ow2()
+```
+
+Grouping the feature importance by `role_playermetric` it can be seen that MIT and K for tanks are, in fact, the most important player metric in predicting game outcome. This is followed by Damage done by damage players and Damage done by support players. Interestingly, although tanks are important, their deaths aren't as important. Perhaps, this is due to the fact that revives occur consistently which can keep the momentum of a winning game.
+
+```{r}
+plot_data
+```
+
+# Conclusion
+
+## Key Takeaways
+
+**Tanks are Important.**
+
+-   It was found that tanks (on both teams) are an important role in the game. They are the only groups that have overlapping importance intervals. Their damage mitigation and kills are key predictors in game outcome.
+
+-   The number of tank swaps is weakly negatively correlated with winning. Given that there is also a weak correlation between ally and enemy swaps, this shows that a team that is winning is more likely to stick with what is working, and that when a tank swaps, it is signalling a change in confidence.
+
+Considering the two points above, tanks have the important role of keeping the game balanced by reducing the damage that their teammates receive, and by increasing the number of kills.
+
+Interestingly, tank deaths are not that important. It should be noted that, like with enemy damage, model regularization might be the reason why MIT was selected, as it can also explain the variance in deaths and damage received.
+
+**Support characters can shift the balance of the game.**
+
+-   Total healing is not correlated with game outcome.
+
+-   While the ally total damage isn't statistically significantly correlated with game outcome, the enemy total damage is.
+
+-   Viewing bootstrapped average importance of each group of Team/Role, the enemy support group is much more important than ally support group.
+
+Considering the three points above about healing and damage, it shows that damage received is much more important than the amount of healing received. It is plausible to say that, during a game, healing might equally counter damage resulting in a net zero gain, in terms of overall impact on game outcome.
+
+It could be thought that if tanks are balancing each other out and not swapping, and enemy damage is countered by ally healing, then enemy healers can shift the game based on their actions. This is supported by the fact that Kills, Deaths, Heals, and Damage of the enemy support group are among the top 13 most important features (show in plot 20).
+
+## Potential Impact
+
+The analysis shows that tanks should work on reducing team damage received by increasing MIT, and that damage players should work on increasing damage done. The analysis also shows that if a game is stagnant or tied, then support character damage can be what tilts the balance of the game. Lastly, this research shows that healing isn't as important as the damage dealt. It also shows that damage deaths and support deaths are more important compared to tank deaths.
+
+## Known Limitations
+
+-   Some known limitations are that the OCR software used is estimated to be \~97% accurate and has trouble with registering 0's and 11's.
+
+-   The dataset is likely too small to provide enough statistical power to detect significant correlations.
+
+-   There are only about 174 games with the majority of map counts being below 7.
+
+-   The data is also biased towards games from a support character. It could be likely that the deaths aren't as important due to revives occurring frequency during games.
+
+## Future Work
+
+In future research, more advanced methods like oversampling could be used to account for small sample size, and under-sampling could be used for biased characters,
+
+The lack of performance of the logistic regression model when regularized could hint to issues with collinearity. Future models with more data could consider selecting features based on this study to account for the dependencies between ally and enemy players stats.
+
+Lastly, given the insights from the data, more research can be done to further analyze interactions between healing done and enemy damage dealt. Additionally, interactions between kills and MIT for the tank could be analyzed to possibly determine an ideal or target ratio for high performance.
+
+# References
+
+Blizzard Entertainment. (n.d.). *Overwatch 2 Heroes*. Retrieved November 13, 2024, from <https://overwatch.blizzard.com/en-us/heroes/>
+
+Overbuff. (n.d.). *Overwatch Hero Stats*. Retrieved November 13, 2024, from <https://www.overbuff.com/heroes?platform=pc&timeWindow=year>
+
+## Fun Fact Corner
+Fun fact: the seed used matches the number of pages!
+
